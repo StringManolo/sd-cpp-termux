@@ -1,0 +1,102 @@
+name: Build for Termux (Android)
+
+on:
+  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions"
+    inputs:
+      create_release:
+        description: "Create new release"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - master
+      - termux # O la rama que uses para tu fork
+    paths:
+      - ".github/workflows/build-termux.yml"
+      - "**/CMakeLists.txt"
+      - "**/*.h"
+      - "**/*.hpp"
+      - "**/*.c"
+      - "**/*.cpp"
+      - "ggml"
+
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+
+permissions:
+  contents: write # Necesario si se crea un release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build-termux-arm64:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # Obligatorio para obtener ggml y otras dependencias
+
+      - name: Configurar Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d # Versión estable del NDK. Puedes probar con r26d o r27c
+
+      - name: Configurar CMake con toolchain de Android
+        run: |
+          cmake -B build-android \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DSD_BUILD_EXAMPLES=ON \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_USE_SYSTEM_WEBP=ON \
+            -DSD_SERVER_BUILD_FRONTEND=OFF \
+            -DGGML_NATIVE=OFF
+          # -DSD_VULKAN=ON   # Descomenta si tu dispositivo soporta Vulkan y quieres probarlo
+          # -DSD_OPENCL=ON   # Descomenta si tu dispositivo tiene GPU Adreno/OpenCL
+
+      - name: Compilar
+        run: cmake --build build-android --config Release -j$(nproc)
+
+      - name: Obtener hash del commit (para releases)
+        id: commit
+        if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+        shell: bash
+        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Empaquetar artefactos (binario + licencias)
+        if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+        run: |
+          mkdir -p artifact-termux
+          # Copiar el binario principal (sd-cli) y las librerías compartidas si las hay
+          cp build-android/bin/sd-cli artifact-termux/ 2>/dev/null || cp build-android/bin/sd artifact-termux/
+          # Copiar licencias
+          cp ggml/LICENSE artifact-termux/ggml.txt 2>/dev/null || true
+          cp LICENSE artifact-termux/stable-diffusion.cpp.txt 2>/dev/null || true
+          # Crear un archivo zip (opcional, pero útil para descargar)
+          cd artifact-termux && zip -r ../sd-termux-arm64.zip . && cd ..
+
+      - name: Subir artefacto (binario compilado)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-termux-arm64
+          path: sd-termux-arm64.zip
+          if-no-files-found: error
+
+      - name: Crear Release en GitHub (opcional)
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: termux-${{ steps.commit.outputs.short }}
+          name: Termux Build ${{ steps.commit.outputs.short }}
+          draft: false
+          prerelease: false
+          files: sd-termux-arm64.zip
