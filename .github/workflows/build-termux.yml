@@ -1,7 +1,7 @@
 name: Build for Termux (Android)
 
 on:
-  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions"
+  workflow_dispatch:
     inputs:
       create_release:
         description: "Create new release"
@@ -11,7 +11,7 @@ on:
   push:
     branches:
       - master
-      - termux # O la rama que uses para tu fork
+      - termux
     paths:
       - ".github/workflows/build-termux.yml"
       - "**/CMakeLists.txt"
@@ -25,7 +25,7 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 permissions:
-  contents: write # Necesario si se crea un release
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
@@ -39,13 +39,13 @@ jobs:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Obligatorio para obtener ggml, libwebp, etc.
+          submodules: recursive
 
       - name: Configurar Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27d # Versión estable del NDK. Puedes probar con r26d o r27c
+          ndk-version: r27d
 
       - name: Configurar CMake con toolchain de Android
         run: |
@@ -58,12 +58,17 @@ jobs:
             -DSD_BUILD_EXAMPLES=ON \
             -DSD_BUILD_SHARED_LIBS=OFF \
             -DSD_SERVER_BUILD_FRONTEND=OFF \
-            -DGGML_NATIVE=OFF
-          # -DSD_VULKAN=ON   # Descomenta si tu dispositivo soporta Vulkan y quieres probarlo
-          # -DSD_OPENCL=ON   # Descomenta si tu dispositivo tiene GPU Adreno/OpenCL
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-openmp"
 
       - name: Compilar
         run: cmake --build build-android --config Release -j$(nproc)
+
+      - name: Verificar dependencias del binario
+        run: |
+          SD_BIN=$(find build-android/bin -maxdepth 1 -name "sd-cli" -o -name "sd" | head -n 1)
+          echo "Binario: $SD_BIN"
+          readelf -d "$SD_BIN" | grep NEEDED || true
 
       - name: Obtener hash del commit (para releases)
         id: commit
@@ -75,19 +80,34 @@ jobs:
         if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
         run: |
           mkdir -p artifact-termux
-          # Copiar el binario principal (sd-cli) y las librerías compartidas si las hay
           cp build-android/bin/sd-cli artifact-termux/ 2>/dev/null || cp build-android/bin/sd artifact-termux/
-          # Copiar licencias
           cp ggml/LICENSE artifact-termux/ggml.txt 2>/dev/null || true
           cp LICENSE artifact-termux/stable-diffusion.cpp.txt 2>/dev/null || true
-          # Crear un archivo zip (opcional, pero útil para descargar)
           cd artifact-termux && zip -r ../sd-termux-arm64.zip . && cd ..
 
-      - name: Subir artefacto (binario compilado)
+      - name: Subir artefacto del binario
         uses: actions/upload-artifact@v4
         with:
           name: sd-termux-arm64
           path: sd-termux-arm64.zip
+          if-no-files-found: error
+
+      - name: Extraer y subir libomp.so del NDK (respaldo)
+        run: |
+          LIBOMP_PATH=$(find "${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64" -path "*/lib/linux/aarch64/libomp.so" | head -n 1)
+          if [ -z "$LIBOMP_PATH" ]; then
+            echo "No se encontró libomp.so para arm64 en el NDK"
+            exit 1
+          fi
+          echo "Encontrado: $LIBOMP_PATH"
+          mkdir -p libomp-artifact
+          cp "$LIBOMP_PATH" libomp-artifact/
+
+      - name: Subir libomp.so como artefacto de respaldo
+        uses: actions/upload-artifact@v4
+        with:
+          name: libomp-termux-arm64
+          path: libomp-artifact/libomp.so
           if-no-files-found: error
 
       - name: Crear Release en GitHub (opcional)
@@ -98,4 +118,6 @@ jobs:
           name: Termux Build ${{ steps.commit.outputs.short }}
           draft: false
           prerelease: false
-          files: sd-termux-arm64.zip
+          files: |
+            sd-termux-arm64.zip
+            libomp-artifact/libomp.so
