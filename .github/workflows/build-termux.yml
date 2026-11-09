@@ -34,12 +34,12 @@ concurrency:
 jobs:
   build-termux-arm64:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Obligatorio para obtener ggml y otras dependencias
+          submodules: recursive # Obligatorio para obtener ggml, libwebp, etc.
 
       - name: Configurar Android NDK
         id: setup-ndk
@@ -57,7 +57,6 @@ jobs:
             -DANDROID_PLATFORM=android-24 \
             -DSD_BUILD_EXAMPLES=ON \
             -DSD_BUILD_SHARED_LIBS=OFF \
-            -DSD_USE_SYSTEM_WEBP=ON \
             -DSD_SERVER_BUILD_FRONTEND=OFF \
             -DGGML_NATIVE=OFF
           # -DSD_VULKAN=ON   # Descomenta si tu dispositivo soporta Vulkan y quieres probarlo
